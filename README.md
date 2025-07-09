@@ -1,4 +1,4 @@
-# 🔩 PhysRig: Differentiable Physics-Based Rigging for Realistic Articulated Object Modeling
+# PhysRig: Differentiable Physics-Based Rigging for Realistic Articulated Object Modeling
 
 [![Paper](https://img.shields.io/badge/Paper-arXiv%3A2506.20936-b31b1b.svg)](https://arxiv.org/abs/2506.20936)
 [![Project Page](https://img.shields.io/badge/Project-physrig.github.io-blue)](https://physrig.github.io)
