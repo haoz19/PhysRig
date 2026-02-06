@@ -617,6 +617,14 @@ class Trainer:
                 )
             )
             
+            # Haolan：更新cuboid_point位置，根据 cuboid_update_mode 选择更新方式
+            if self.cuboid_update_mode in ["location_only", "both"] and len(self.cuboid_positions) > start_time_idx:
+                # Use tracked point positions directly (only if positions are available)
+                self.cuboid_point = self.cuboid_positions[start_time_idx].detach()
+            else:
+                # Use velocity-based update (velocity_only mode or no tracked positions available)
+                self.cuboid_point = (self.cuboid_point + current_cuboid_velocity * delta_time).detach()
+            
             # Haolan：累积全局时间
             frame_time_offset += delta_time
             
@@ -626,22 +634,12 @@ class Trainer:
                 points_list = [sim_points_full]
                 save_ply(points_list, self.step, self.output_dir, frame_idx=start_time_idx+1)
              
-            # 在最后一轮保存变换后的 cuboid_point (BEFORE updating to next position)
-            # This saves the position that was ACTUALLY USED in the simulation above
+            # 在最后一轮保存变换后的 cuboid_point
             if self.step == self.train_iters - 1:
                 cuboid_point_transformed = self.cuboid_point.detach() * self.scale - self.shift
                 cuboid_point_np = cuboid_point_transformed.cpu().numpy()
                 cuboid_points_list = [cuboid_point_np]
                 save_ply(cuboid_points_list, self.step, self.output_dir, frame_idx=start_time_idx+1, subdir="skeleton")
-            
-            # Haolan：更新cuboid_point位置，根据 cuboid_update_mode 选择更新方式
-            # This update prepares the position for the NEXT frame
-            if self.cuboid_update_mode in ["location_only", "both"] and len(self.cuboid_positions) > start_time_idx:
-                # Use tracked point positions directly (only if positions are available)
-                self.cuboid_point = self.cuboid_positions[start_time_idx].detach()
-            else:
-                # Use velocity-based update (velocity_only mode or no tracked positions available)
-                self.cuboid_point = (self.cuboid_point + current_cuboid_velocity * delta_time).detach()
             
             # Haolan:loss 
             chamfer_dist = ChamferDistance()

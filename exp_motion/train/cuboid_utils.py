@@ -168,17 +168,6 @@ def assign_cuboid_velocity(cuboid_centers, cuboid_sizes, cuboid_types, total_fra
         - "velocity_only": Update cuboid velocity from tracked points, keep location fixed
         - "location_only": Update cuboid location from tracked points, keep velocity traditional
         - "both": Update both velocity and location from tracked points
-    
-    Position calculation methods (switch by changing ACTIVE_METHOD variable in code):
-    1. "mean": Simple average of all tracked points
-    2. "median": Median position of tracked points
-    3. "weighted": Inverse distance weighted from initial cuboid center
-    4. "bbox": Center of bounding box (min/max)
-    5. "adaptive": Trimmed mean with outlier removal + density weighting
-    6. "pca": Principal Component Analysis center (covariance-based)
-    7. "optimized": LBFGS optimization to minimize L2 deviation (EXPENSIVE!)
-    
-    NOTE: Only the active method is computed (not all 7), for efficiency and numerical stability.
     """
     num_cuboids = len(cuboid_centers)
     frame_start = 0
@@ -199,7 +188,6 @@ def assign_cuboid_velocity(cuboid_centers, cuboid_sizes, cuboid_types, total_fra
     cuboid_sizes_np = np.array(cuboid_sizes)
     
     cuboid_point_indices = []
-    cuboid_weights = []  # Weights for each cuboid's tracked points
     
     print(f"\n=== Frame 0: Identifying points covered by each cuboid ===")
     for cuboid_idx, (center, size) in enumerate(zip(cuboid_centers_np, cuboid_sizes_np)):
@@ -210,19 +198,7 @@ def assign_cuboid_velocity(cuboid_centers, cuboid_sizes, cuboid_types, total_fra
         in_cuboid_mask = np.all((frame_0_mesh >= lower_bound) & (frame_0_mesh <= upper_bound), axis=1)
         point_indices = np.where(in_cuboid_mask)[0]
         
-        # Calculate weights based on initial distance to cuboid center
-        if len(point_indices) > 0:
-            points_in_cuboid = frame_0_mesh[point_indices]
-            distances = np.linalg.norm(points_in_cuboid - center, axis=1)
-            # Inverse distance weighting (closer points = higher weight)
-            weights = 1.0 / (distances + 1e-6)
-            weights = weights / weights.sum()  # Normalize to sum to 1
-            weights_tensor = torch.tensor(weights, dtype=torch.float32, device=device)
-        else:
-            weights_tensor = torch.tensor([], dtype=torch.float32, device=device)
-        
         cuboid_point_indices.append(point_indices.tolist())
-        cuboid_weights.append(weights_tensor)
         print(f"  Cuboid {cuboid_idx} ({cuboid_types[cuboid_idx]}): covers {len(point_indices)} points")
     
     velocity_per_frame = []
@@ -242,7 +218,6 @@ def assign_cuboid_velocity(cuboid_centers, cuboid_sizes, cuboid_types, total_fra
             
             for cuboid_idx in range(num_cuboids):
                 point_indices = cuboid_point_indices[cuboid_idx]
-                weights = cuboid_weights[cuboid_idx]
                 
                 if len(point_indices) == 0:
                     vel_step = torch.zeros(3, dtype=torch.float32, device=device)
@@ -251,103 +226,10 @@ def assign_cuboid_velocity(cuboid_centers, cuboid_sizes, cuboid_types, total_fra
                     current_points = current_frame_pos[point_indices]
                     next_points = next_frame_pos[point_indices]
                     
-                    # ========================================
-                    # ACTIVE METHOD SELECTION (set here to control which method is computed)
-                    # Options: "mean", "median", "weighted", "bbox", "adaptive", "pca", "optimized"
-                    # ========================================
-                    ACTIVE_METHOD = "mean"  # <-- CHANGE THIS TO SWITCH METHODS
+                    p0_avg = current_points.mean(dim=0)
+                    p1_avg = next_points.mean(dim=0)
                     
-                    # Calculate selected position method:
-                    # 1. Mean
-                    if ACTIVE_METHOD == "mean":
-                        p0 = current_points.mean(dim=0)
-                        p1 = next_points.mean(dim=0)
-                    
-                    # 2. Median
-                    elif ACTIVE_METHOD == "median":
-                        p0 = current_points.median(dim=0).values
-                        p1 = next_points.median(dim=0).values
-                    
-                    # 3. Weighted average (inverse distance weighting)
-                    elif ACTIVE_METHOD == "weighted":
-                        p0 = (current_points * weights.unsqueeze(1)).sum(dim=0)
-                        p1 = (next_points * weights.unsqueeze(1)).sum(dim=0)
-                    
-                    # 4. Bounding box center
-                    elif ACTIVE_METHOD == "bbox":
-                        p0_bbox_min = current_points.min(dim=0).values
-                        p0_bbox_max = current_points.max(dim=0).values
-                        p0 = (p0_bbox_min + p0_bbox_max) / 2.0
-                        
-                        p1_bbox_min = next_points.min(dim=0).values
-                        p1_bbox_max = next_points.max(dim=0).values
-                        p1 = (p1_bbox_min + p1_bbox_max) / 2.0
-                    
-                    # 5. Adaptive Size + Center (trimmed mean with outlier removal)
-                    elif ACTIVE_METHOD == "adaptive":
-                        def adaptive_center(points):
-                            if len(points) <= 3:
-                                return points.mean(dim=0)
-                            
-                            point_median = points.median(dim=0).values
-                            distances_from_median = torch.norm(points - point_median, dim=1)
-                            
-                            q1 = torch.quantile(distances_from_median, 0.25)
-                            q3 = torch.quantile(distances_from_median, 0.75)
-                            iqr = q3 - q1
-                            outlier_threshold = q3 + 1.5 * iqr
-                            
-                            inlier_mask = distances_from_median <= outlier_threshold
-                            inliers = points[inlier_mask]
-                            
-                            if len(inliers) == 0:
-                                return points.mean(dim=0)
-                            
-                            inlier_distances = torch.norm(inliers - point_median, dim=1)
-                            density_weights = 1.0 / (inlier_distances + 1e-6)
-                            density_weights = density_weights / density_weights.sum()
-                            
-                            return (inliers * density_weights.unsqueeze(1)).sum(dim=0)
-                        
-                        p0 = adaptive_center(current_points)
-                        p1 = adaptive_center(next_points)
-                    
-                    # 6. PCA-based center (using covariance matrix and principal axes)
-                    elif ACTIVE_METHOD == "pca":
-                        def pca_center(points):
-                            center_avg = points.mean(dim=0)
-                            centered = points - center_avg
-                            cov = (centered.T @ centered) / len(points)
-                            eigenvalues, eigenvectors = torch.linalg.eigh(cov)
-                            sizes_along_axes = 2.0 * torch.sqrt(eigenvalues)
-                            return center_avg
-                        
-                        p0 = pca_center(current_points)
-                        p1 = pca_center(next_points)
-                    
-                    # 7. Optimization-based (Minimize Deviation using LBFGS)
-                    elif ACTIVE_METHOD == "optimized":
-                        def optimize_position(points, initial_center, max_iters=10):
-                            pos = initial_center.clone().requires_grad_(True)
-                            optimizer = torch.optim.LBFGS([pos], max_iter=max_iters, line_search_fn='strong_wolfe')
-                            
-                            def closure():
-                                optimizer.zero_grad()
-                                distances = torch.norm(points - pos, dim=1)
-                                loss = distances.pow(2).sum()
-                                loss.backward()
-                                return loss
-                            
-                            optimizer.step(closure)
-                            return pos.detach()
-                        
-                        p0 = optimize_position(current_points, cuboid_centers_tensor[cuboid_idx])
-                        p1 = optimize_position(next_points, cuboid_centers_tensor[cuboid_idx])
-                    
-                    else:
-                        raise ValueError(f"Unknown ACTIVE_METHOD: {ACTIVE_METHOD}. Must be one of: mean, median, weighted, bbox, adaptive, pca, optimized")
-
-                    vel_full = (p1 - p0) / delta_time
+                    vel_full = (p1_avg - p0_avg) / delta_time
                     vel_step = vel_full / steps_this_segment if steps_this_segment > 1 else vel_full
                     
                     if cuboid_update_mode == "velocity_only":
@@ -359,9 +241,9 @@ def assign_cuboid_velocity(cuboid_centers, cuboid_sizes, cuboid_types, total_fra
                         trad_p1 = next_frame_pos[closest_idx]
                         vel_full = (trad_p1 - trad_p0) / delta_time
                         vel_step = vel_full / steps_this_segment if steps_this_segment > 1 else vel_full
-                        pos_start = p0
+                        pos_start = p0_avg + vel_step * delta_time * sub_step if steps_this_segment > 1 else p0_avg
                     else:  # "both"
-                        pos_start = p0
+                        pos_start = p0_avg + vel_step * delta_time * sub_step if steps_this_segment > 1 else p0_avg
                 
                 step_vels.append(vel_step)
                 step_positions.append(pos_start)
