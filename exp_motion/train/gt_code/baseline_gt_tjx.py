@@ -345,6 +345,7 @@ class Trainer:
             device=device,
             num_intermediate_frames=args.num_intermediate_frames,
             cuboid_update_mode=args.cuboid_update_mode,
+            position_method=args.position_method,
         )
         
         for i in range(len(self.cuboid_velocity)):
@@ -786,6 +787,9 @@ def parse_args():
     parser.add_argument("--cuboid_update_mode", type=str, default="both", 
                         choices=["velocity_only", "location_only", "both"],
                         help="Cuboid update mode: velocity_only, location_only, or both")
+    parser.add_argument("--position_method", type=str, default="mean",
+                        choices=["mean", "median", "weighted", "bbox", "adaptive", "pca", "optimized"],
+                        help="Position calculation method for cuboid centers from tracked points")
 
 
 

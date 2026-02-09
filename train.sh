@@ -36,7 +36,17 @@ DATASET_DIR="data/${DATASET}"
 # - velocity_only: Update cuboid velocity from tracked points, keep location fixed
 # - location_only: Update cuboid location from tracked points, keep velocity traditional
 # - both: Update both velocity and location from tracked points
-CUBOID_UPDATE_MODE="location_only"
+CUBOID_UPDATE_MODE="both"
+
+# Position method for computing cuboid center from tracked points:
+# - mean: Simple average of all tracked points (default, original behavior)
+# - median: Median position of tracked points
+# - weighted: Inverse distance weighted from initial cuboid center
+# - bbox: Center of bounding box (min/max)
+# - adaptive: Trimmed mean with outlier removal + density weighting
+# - pca: Principal Component Analysis center (covariance-based)
+# - optimized: LBFGS optimization to minimize L2 deviation (EXPENSIVE!)
+POSITION_METHOD="adaptive"
 
 # Check dataset exists
 if [ ! -d "$DATASET_DIR" ]; then
@@ -58,7 +68,7 @@ INFERENCE_OUTPUT_DIR="output/inference/${DATASET}"
 WANDB_NAME_INF="${DATASET}_inference"
 
 # Inference parameters (adjust as needed)
-NUM_FRAMES_INF=16          # Number of GT frames to process (must match skeleton files)
+NUM_FRAMES_INF=16           # Number of GT frames to process (must match skeleton files)
 NUM_INTERMEDIATE_INF=8      # Intermediate frames (keep 0 to match training)
 SUBSTEP_INF=100             # Simulation substeps per frame
 YOUNGS_INF=6e4              # Young's modulus
@@ -72,6 +82,7 @@ echo "  - Skeleton: $SKELETON_DIR"
 echo "  - Output: $INFERENCE_OUTPUT_DIR"
 echo "  - Frames: $NUM_FRAMES_INF"
 echo "  - Cuboid Update Mode: $CUBOID_UPDATE_MODE"
+echo "  - Position Method: $POSITION_METHOD"
 echo ""
 
 # Clean old inference outputs to avoid confusion
@@ -92,7 +103,8 @@ $PYTHON $INFERENCE_SCRIPT \
     --sample_particles $SAMPLE_PARTICLES_INF \
     --velo_factor $VELO_FACTOR_INF \
     --output_dir $INFERENCE_OUTPUT_DIR \
-    --cuboid_update_mode $CUBOID_UPDATE_MODE
+    --cuboid_update_mode $CUBOID_UPDATE_MODE \
+    --position_method $POSITION_METHOD
 
 INFERENCE_END_TIME=$(date +%s)
 INFERENCE_DURATION=$((INFERENCE_END_TIME - INFERENCE_START_TIME))
@@ -215,6 +227,7 @@ $PYTHON $TRAIN_SCRIPT \
     --warmup_step $WARMUP_STEP \
     --stride $STRIDE \
     --cuboid_update_mode $CUBOID_UPDATE_MODE \
+    --position_method $POSITION_METHOD \
     $CAPSULE_ARGS
 
 VALIDATION_END_TIME=$(date +%s)
