@@ -312,6 +312,10 @@ class Trainer:
             grid_dx,
             vertices_assignment=None,
             mesh=None,
+            sizing_mode=args.cuboid_size_mode,
+            sizing_coeff=args.cuboid_size_coeff,
+            knn_k=args.cuboid_knn_k,
+            full_pointcloud=sim_xyzs.cpu().numpy(),
         )
     
         # 检查 cuboid_finding 是否成功找到立方体
@@ -882,6 +886,13 @@ def parse_args():
     parser.add_argument("--position_method", type=str, default="mean",
                         choices=["mean", "median", "weighted", "bbox", "adaptive", "pca", "optimized"],
                         help="Position calculation method for cuboid centers from tracked points")
+    parser.add_argument("--cuboid_size_mode", type=str, default="fixed",
+                        choices=["fixed", "adaptive", "knn", "hybrid", "raycast"],
+                        help="Cuboid sizing strategy: fixed, adaptive, knn, hybrid, or raycast")
+    parser.add_argument("--cuboid_size_coeff", type=float, default=0.7,
+                        help="Scaling coefficient for cuboid radius (used by all sizing modes)")
+    parser.add_argument("--cuboid_knn_k", type=int, default=20,
+                        help="K for KNN-based sizing modes (knn, hybrid, raycast)")
 
 
     # distributed training args

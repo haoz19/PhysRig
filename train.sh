@@ -48,6 +48,20 @@ CUBOID_UPDATE_MODE="both"
 # - optimized: LBFGS optimization to minimize L2 deviation (EXPENSIVE!)
 POSITION_METHOD="adaptive"
 
+# Cuboid sizing strategy: "fixed", "adaptive", "knn", "hybrid", "raycast"
+# - fixed: Uniform radius from global min inter-vertex distance (original behavior)
+# - adaptive: Per-cuboid radius from distance to nearest neighbor cuboid
+# - knn: Radius sized to contain K nearest dense points
+# - hybrid: KNN sets base radius, nearest neighbor caps it to prevent overlap
+# - raycast: Directional sphere expansion with density-based boundary detection
+CUBOID_SIZE_MODE="knn"
+
+# Scaling coefficient for cuboid radius (used by all sizing modes, default 0.7)
+CUBOID_SIZE_COEFF=0.7
+
+# K for KNN-based sizing modes (knn, hybrid, raycast)
+CUBOID_KNN_K=24
+
 # Check dataset exists
 if [ ! -d "$DATASET_DIR" ]; then
     echo "❌ Error: Dataset directory '$DATASET_DIR' not found!"
@@ -83,6 +97,9 @@ echo "  - Output: $INFERENCE_OUTPUT_DIR"
 echo "  - Frames: $NUM_FRAMES_INF"
 echo "  - Cuboid Update Mode: $CUBOID_UPDATE_MODE"
 echo "  - Position Method: $POSITION_METHOD"
+echo "  - Cuboid Size Mode: $CUBOID_SIZE_MODE"
+echo "  - Cuboid Size Coeff: $CUBOID_SIZE_COEFF"
+echo "  - Cuboid KNN K: $CUBOID_KNN_K"
 echo ""
 
 # Clean old inference outputs to avoid confusion
@@ -104,7 +121,10 @@ $PYTHON $INFERENCE_SCRIPT \
     --velo_factor $VELO_FACTOR_INF \
     --output_dir $INFERENCE_OUTPUT_DIR \
     --cuboid_update_mode $CUBOID_UPDATE_MODE \
-    --position_method $POSITION_METHOD
+    --position_method $POSITION_METHOD \
+    --cuboid_size_mode $CUBOID_SIZE_MODE \
+    --cuboid_size_coeff $CUBOID_SIZE_COEFF \
+    --cuboid_knn_k $CUBOID_KNN_K
 
 INFERENCE_END_TIME=$(date +%s)
 INFERENCE_DURATION=$((INFERENCE_END_TIME - INFERENCE_START_TIME))
@@ -228,6 +248,9 @@ $PYTHON $TRAIN_SCRIPT \
     --stride $STRIDE \
     --cuboid_update_mode $CUBOID_UPDATE_MODE \
     --position_method $POSITION_METHOD \
+    --cuboid_size_mode $CUBOID_SIZE_MODE \
+    --cuboid_size_coeff $CUBOID_SIZE_COEFF \
+    --cuboid_knn_k $CUBOID_KNN_K \
     $CAPSULE_ARGS
 
 VALIDATION_END_TIME=$(date +%s)

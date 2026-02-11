@@ -44,25 +44,198 @@ def shrink_adjacent_cuboids(cuboid_centers, cuboid_sizes, cuboid_types, vertices
     return cuboid_sizes
 
     
-def cuboid_finding(vertices, grid_dx, vertices_assignment=None, mesh=None):
+def cuboid_finding(vertices, grid_dx, vertices_assignment=None, mesh=None,
+                   sizing_mode="fixed", sizing_coeff=0.7, knn_k=20,
+                   full_pointcloud=None):
     if vertices_assignment is None:
         cuboid_centers = []
         cuboid_sizes = []
         cuboid_types = []
-       
+
         vertices_original = vertices
-        dists = cdist(vertices_original, vertices_original)
-        
-        min_dist = np.min(dists[np.nonzero(dists)])
-        global_radius = (min_dist / 2.0) * 0.7
-        
-        fixed_radius = global_radius
-        
-        for i in range(vertices_original.shape[0]):
-            center = vertices_original[i]
-            cuboid_centers.append(center)
-            cuboid_sizes.append(np.array([fixed_radius, fixed_radius, fixed_radius]))
-            cuboid_types.append('point_sphere')        
+        num_vertices = vertices_original.shape[0]
+
+        print(f"\n=== Cuboid sizing: mode={sizing_mode}, coeff={sizing_coeff}, knn_k={knn_k} ===")
+
+        # =====================================================================
+        # Sizing strategy selection (exclusive if-elif-else, only one runs)
+        # =====================================================================
+
+        # 1. Fixed Size (original behavior)
+        if sizing_mode == "fixed":
+            dists = cdist(vertices_original, vertices_original)
+            min_dist = np.min(dists[np.nonzero(dists)])
+            fixed_radius = (min_dist / 2.0) * sizing_coeff
+            print(f"  Fixed: min_dist={min_dist:.6f}, radius={fixed_radius:.6f}")
+
+            for i in range(num_vertices):
+                cuboid_centers.append(vertices_original[i])
+                cuboid_sizes.append(np.array([fixed_radius, fixed_radius, fixed_radius]))
+                cuboid_types.append('point_sphere')
+
+        # 2. Adaptive Neighbor Distance (per-cuboid nearest neighbor)
+        elif sizing_mode == "adaptive":
+            tree = cKDTree(vertices_original)
+            # k=2 because the first neighbor is the point itself (distance 0)
+            dists_nn, _ = tree.query(vertices_original, k=2)
+            nearest_dists = dists_nn[:, 1]  # distance to closest other cuboid center
+
+            for i in range(num_vertices):
+                radius_i = (nearest_dists[i] / 2.0) * sizing_coeff
+                cuboid_centers.append(vertices_original[i])
+                cuboid_sizes.append(np.array([radius_i, radius_i, radius_i]))
+                cuboid_types.append('point_sphere')
+                print(f"  Cuboid {i}: nearest_dist={nearest_dists[i]:.6f}, radius={radius_i:.6f}")
+
+        # 3. KNN (K-Nearest Points from dense point cloud)
+        elif sizing_mode == "knn":
+            if full_pointcloud is None:
+                raise ValueError("sizing_mode='knn' requires full_pointcloud (dense point cloud) to be provided.")
+            pc_tree = cKDTree(full_pointcloud)
+            # Query knn_k nearest dense points for each cuboid center
+            dists_knn, _ = pc_tree.query(vertices_original, k=knn_k)
+            # Distance to the K-th nearest point (last column)
+            kth_dists = dists_knn[:, -1]
+
+            for i in range(num_vertices):
+                radius_i = kth_dists[i] * sizing_coeff
+                cuboid_centers.append(vertices_original[i])
+                cuboid_sizes.append(np.array([radius_i, radius_i, radius_i]))
+                cuboid_types.append('point_sphere')
+                print(f"  Cuboid {i}: kth_dist={kth_dists[i]:.6f}, radius={radius_i:.6f}")
+
+        # 4. Hybrid (KNN + Nearest Neighbor constraint)
+        #    KNN sets the base radius; nearest neighbor sets the upper limit
+        elif sizing_mode == "hybrid":
+            if full_pointcloud is None:
+                raise ValueError("sizing_mode='hybrid' requires full_pointcloud (dense point cloud) to be provided.")
+            # Nearest cuboid neighbor distances
+            cuboid_tree = cKDTree(vertices_original)
+            dists_nn, _ = cuboid_tree.query(vertices_original, k=2)
+            nearest_dists = dists_nn[:, 1]
+            # KNN distances from dense point cloud
+            pc_tree = cKDTree(full_pointcloud)
+            dists_knn, _ = pc_tree.query(vertices_original, k=knn_k)
+            kth_dists = dists_knn[:, -1]
+
+            for i in range(num_vertices):
+                knn_radius = kth_dists[i] * sizing_coeff
+                nearest_radius = (nearest_dists[i] / 2.0) * sizing_coeff
+                # KNN wants bigger; nearest caps it to prevent overlap
+                radius_i = min(knn_radius, nearest_radius)
+                cuboid_centers.append(vertices_original[i])
+                cuboid_sizes.append(np.array([radius_i, radius_i, radius_i]))
+                cuboid_types.append('point_sphere')
+                print(f"  Cuboid {i}: knn_r={knn_radius:.6f}, nearest_r={nearest_radius:.6f}, final={radius_i:.6f}")
+
+        # 5. Ray Casting / Sphere Casting (density-based boundary detection)
+        elif sizing_mode == "raycast":
+            if full_pointcloud is None:
+                raise ValueError("sizing_mode='raycast' requires full_pointcloud (dense point cloud) to be provided.")
+            pc_tree = cKDTree(full_pointcloud)
+
+            # Generate uniformly distributed ray directions (26 directions:
+            # 6 axis-aligned + 12 edge diagonals + 8 corner diagonals)
+            ray_dirs = []
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    for dz in [-1, 0, 1]:
+                        if dx == 0 and dy == 0 and dz == 0:
+                            continue
+                        d = np.array([dx, dy, dz], dtype=np.float64)
+                        ray_dirs.append(d / np.linalg.norm(d))
+            ray_dirs = np.array(ray_dirs)  # (26, 3)
+
+            # Cone half-angle for ray search (in radians, ~30 degrees)
+            cone_half_angle = np.pi / 6.0
+            cos_threshold = np.cos(cone_half_angle)
+
+            # Number of radial bins for density detection
+            num_bins = 20
+
+            for i in range(num_vertices):
+                center = vertices_original[i]
+
+                # Find all points within a generous search radius
+                # Use knn_k to set a baseline search radius
+                knn_dists_i, _ = pc_tree.query(center, k=min(knn_k * 10, len(full_pointcloud)))
+                search_radius = knn_dists_i[-1] * 2.0
+
+                # Get all points within search radius
+                nearby_indices = pc_tree.query_ball_point(center, search_radius)
+                if len(nearby_indices) == 0:
+                    # Fallback: use a small default radius
+                    radius_i = grid_dx
+                    cuboid_centers.append(center)
+                    cuboid_sizes.append(np.array([radius_i, radius_i, radius_i]))
+                    cuboid_types.append('point_sphere')
+                    print(f"  Cuboid {i}: raycast fallback, radius={radius_i:.6f}")
+                    continue
+
+                nearby_points = full_pointcloud[nearby_indices]
+                offsets = nearby_points - center
+                dists_from_center = np.linalg.norm(offsets, axis=1)
+                # Avoid division by zero
+                valid_mask = dists_from_center > 1e-10
+                offsets_valid = offsets[valid_mask]
+                dists_valid = dists_from_center[valid_mask]
+
+                if len(dists_valid) == 0:
+                    radius_i = grid_dx
+                    cuboid_centers.append(center)
+                    cuboid_sizes.append(np.array([radius_i, radius_i, radius_i]))
+                    cuboid_types.append('point_sphere')
+                    print(f"  Cuboid {i}: raycast fallback (no valid points), radius={radius_i:.6f}")
+                    continue
+
+                # Normalize offsets to get directions
+                directions = offsets_valid / dists_valid[:, np.newaxis]
+
+                # For each ray direction, find boundary distance
+                ray_boundary_dists = []
+                for ray_dir in ray_dirs:
+                    # Points within the cone of this ray direction
+                    cos_angles = directions @ ray_dir
+                    in_cone = cos_angles >= cos_threshold
+                    cone_dists = dists_valid[in_cone]
+
+                    if len(cone_dists) < 2:
+                        continue  # Skip rays with insufficient points
+
+                    # Bin by distance and detect density drop-off
+                    max_cone_dist = cone_dists.max()
+                    bin_edges = np.linspace(0, max_cone_dist, num_bins + 1)
+
+                    # Find the last bin that contains points
+                    boundary_dist = max_cone_dist
+                    for b in range(num_bins):
+                        bin_mask = (cone_dists >= bin_edges[b]) & (cone_dists < bin_edges[b + 1])
+                        if bin_mask.sum() == 0:
+                            # Empty bin found: boundary is at this bin's start
+                            boundary_dist = bin_edges[b]
+                            break
+
+                    ray_boundary_dists.append(boundary_dist)
+
+                if len(ray_boundary_dists) > 0:
+                    # Use minimum across ray directions (conservative)
+                    radius_i = np.min(ray_boundary_dists) * sizing_coeff
+                else:
+                    radius_i = grid_dx
+
+                # Ensure a minimum radius
+                radius_i = max(radius_i, grid_dx * 0.1)
+
+                cuboid_centers.append(center)
+                cuboid_sizes.append(np.array([radius_i, radius_i, radius_i]))
+                cuboid_types.append('point_sphere')
+                print(f"  Cuboid {i}: raycast radius={radius_i:.6f} (from {len(ray_boundary_dists)} rays)")
+
+        else:
+            raise ValueError(
+                f"Unknown sizing_mode: '{sizing_mode}'. "
+                f"Must be one of: 'fixed', 'adaptive', 'knn', 'hybrid', 'raycast'"
+            )
 
         boundary_points_list = []
         return cuboid_centers, cuboid_sizes, cuboid_types, boundary_points_list
@@ -229,6 +402,10 @@ def assign_cuboid_velocity(cuboid_centers, cuboid_sizes, cuboid_types, total_fra
         
         cuboid_point_indices.append(point_indices.tolist())
         print(f"  Cuboid {cuboid_idx} ({cuboid_types[cuboid_idx]}): covers {len(point_indices)} points")
+    
+    total_covered = sum(len(idx) for idx in cuboid_point_indices)
+    print(f"\n  Total points covered: {total_covered}")
+    input("Press Enter to continue...")
     
     velocity_per_frame = []
     position_per_frame = []
