@@ -88,6 +88,7 @@ def cuboid_finding(vertices, grid_dx, vertices_assignment=None, mesh=None,
                 print(f"  Cuboid {i}: nearest_dist={nearest_dists[i]:.6f}, radius={radius_i:.6f}")
 
         # 3. KNN (K-Nearest Points from dense point cloud)
+        #    HARDCODED: coefficient is 1.0, ignoring sizing_coeff parameter
         elif sizing_mode == "knn":
             if full_pointcloud is None:
                 raise ValueError("sizing_mode='knn' requires full_pointcloud (dense point cloud) to be provided.")
@@ -98,35 +99,33 @@ def cuboid_finding(vertices, grid_dx, vertices_assignment=None, mesh=None,
             kth_dists = dists_knn[:, -1]
 
             for i in range(num_vertices):
-                radius_i = kth_dists[i] * sizing_coeff
+                radius_i = kth_dists[i] * 1.0  # HARDCODED coefficient = 1.0
                 cuboid_centers.append(vertices_original[i])
                 cuboid_sizes.append(np.array([radius_i, radius_i, radius_i]))
                 cuboid_types.append('point_sphere')
                 print(f"  Cuboid {i}: kth_dist={kth_dists[i]:.6f}, radius={radius_i:.6f}")
 
-        # 4. Hybrid (KNN + Nearest Neighbor constraint)
-        #    KNN sets the base radius; nearest neighbor sets the upper limit
+        # 4. Hybrid (KNN + Fixed Radius constraint)
+        #    KNN sets the base radius (coeff=1.0); sizing_coeff controls the fixed constraint
         elif sizing_mode == "hybrid":
             if full_pointcloud is None:
                 raise ValueError("sizing_mode='hybrid' requires full_pointcloud (dense point cloud) to be provided.")
-            # Nearest cuboid neighbor distances
-            cuboid_tree = cKDTree(vertices_original)
-            dists_nn, _ = cuboid_tree.query(vertices_original, k=2)
-            nearest_dists = dists_nn[:, 1]
             # KNN distances from dense point cloud
             pc_tree = cKDTree(full_pointcloud)
             dists_knn, _ = pc_tree.query(vertices_original, k=knn_k)
             kth_dists = dists_knn[:, -1]
+            
+            # Fixed radius constraint (controlled by sizing_coeff)
+            fixed_radius = grid_dx * sizing_coeff
 
             for i in range(num_vertices):
-                knn_radius = kth_dists[i] * sizing_coeff
-                nearest_radius = (nearest_dists[i] / 2.0) * sizing_coeff
-                # KNN wants bigger; nearest caps it to prevent overlap
-                radius_i = min(knn_radius, nearest_radius)
+                knn_radius = kth_dists[i] * 1.0  # HARDCODED coefficient = 1.0 for KNN
+                # Take minimum of KNN radius and fixed constraint
+                radius_i = min(knn_radius, fixed_radius)
                 cuboid_centers.append(vertices_original[i])
                 cuboid_sizes.append(np.array([radius_i, radius_i, radius_i]))
                 cuboid_types.append('point_sphere')
-                print(f"  Cuboid {i}: knn_r={knn_radius:.6f}, nearest_r={nearest_radius:.6f}, final={radius_i:.6f}")
+                print(f"  Cuboid {i}: knn_r={knn_radius:.6f}, fixed_r={fixed_radius:.6f}, final={radius_i:.6f}")
 
         # 5. Ray Casting / Sphere Casting (density-based boundary detection)
         elif sizing_mode == "raycast":

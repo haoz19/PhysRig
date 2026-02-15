@@ -51,16 +51,19 @@ POSITION_METHOD="adaptive"
 # Cuboid sizing strategy: "fixed", "adaptive", "knn", "hybrid", "raycast"
 # - fixed: Uniform radius from global min inter-vertex distance (original behavior)
 # - adaptive: Per-cuboid radius from distance to nearest neighbor cuboid
-# - knn: Radius sized to contain K nearest dense points
-# - hybrid: KNN sets base radius, nearest neighbor caps it to prevent overlap
+# - knn: Radius = distance to K-th nearest dense point (coeff HARDCODED to 1.0)
+# - hybrid: KNN (coeff=1.0) capped by fixed radius (= coeff * grid_dx)
 # - raycast: Directional sphere expansion with density-based boundary detection
-CUBOID_SIZE_MODE="knn"
+CUBOID_SIZE_MODE="raycast"
 
-# Scaling coefficient for cuboid radius (used by all sizing modes, default 0.7)
+# Scaling coefficient for cuboid radius:
+# - knn mode: IGNORED (hardcoded to 1.0)
+# - hybrid mode: controls the fixed radius constraint (fixed_r = coeff * grid_dx)
+# - other modes: scales the radius as before
 CUBOID_SIZE_COEFF=0.7
 
 # K for KNN-based sizing modes (knn, hybrid, raycast)
-CUBOID_KNN_K=24
+CUBOID_KNN_K=56
 
 # Check dataset exists
 if [ ! -d "$DATASET_DIR" ]; then
