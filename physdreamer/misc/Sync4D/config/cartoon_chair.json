@@ -1,0 +1,12 @@
+{
+    "dataset_dir": "/scratch/bbqk/haozhang/files/physdreamer/PhysDreamer/data/cartoon_chair",
+    "checkpoint_path": "None",
+    "output_dir": "outputs/",
+    "name": "cartoon_chair_sand_4bone",
+    "train_iters": 50,
+    "motion_file_path": "/scratch/bbqk/haozhang/files/physdreamer/PhysDreamer/Sync4D/fg_motion.json",
+    "root_motion_file_path": "/scratch/bbqk/haozhang/files/physdreamer/PhysDreamer/Sync4D/root_motion.json",
+    "matching_file_path": "/scratch/bbqk/haozhang/files/physdreamer/PhysDreamer/Sync4D/matching/cat2chair_lite_fix1.json",
+    "v_dt": 0.1,
+    "simulation_dt": 0.16
+}

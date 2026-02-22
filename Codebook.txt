@@ -1,0 +1,216 @@
+# By Haolan，代码中Haolan注释即为Haolan理解和修改
+
+**Training**:
+
+the material field training code, see "exp_motion/train/train_material.py"
+
+code about the auto diff, see "exp_motion/train/interface.py"
+
+diff mpm, see "p2g2p_differentiable" in "files/physdreamer/PhysDreamer/thirdparty_code/warp_mpm/mpm_solver_diff.py"
+
+our MPM code: "/scratch/bbqk/haozhang/files/physdreamer/warp-mpm/mpm_solver_warp.py"
+
+# Command
+
+script.sh
+
+--checkpoint_path None：不加载预训练模型即从头开始训练
+
+--use_wandb：启动wandb进行记录
+
+# Warp-MPM
+
+In warp-mpm, we define the following material parameters:
+
+弹性模量 (E)：控制材质的刚度，数值越大，材质越硬。
+泊松比 (nu)：定义材料的横向膨胀性，即在一个方向受压缩时，材质在垂直方向上的膨胀或收缩程度。
+密度 (density)：与质量和体积共同确定材质的质量分布。
+屈服强度 (yield_stress)：影响材质的塑性变形能力，数值越高，材料在发生永久变形前能承受更大的应力。
+塑性粘度 (plastic_viscosity)：与塑性流动相关的粘度参数，数值越大则材料更难发生塑性流动。
+摩擦角 (friction_angle) 和 摩擦系数 (alpha)：影响材质的内部摩擦特性，用于决定材质在某些条件下的滑动行为。
+体积模量 (bulk_modulus)：控制材质的体积压缩性。
+硬化参数 (hardening)：决定材质在变形后硬化的程度。
+粘弹性阻尼 (rpic_damping)：影响材质在模拟过程中的阻尼行为。
+软化参数 (softening)：影响材质在经历变形时的软化行为。
+全局阻尼缩放因子 (grid_v_damping_scale)：用于全局调节材质的阻尼。
+
+# train_material.py
+
+Input: Video as GT supervision; Gaussian Ply文件 (infilled，对于不够充实的ply会引入internal_filled_points.ply)
+
+Output: sim_fields (Material Field: E); velo_fields (记录每个点在力作用之后的初始速度); Rendered Videos
+
+"init_trainable_params" Only initialize young_modulus & poisson_ratio, 但从get_material_params，实际只有young_modulus被train和update，对于我们来说，需要确认哪些参数能学，并且哪些参数学习是有意义的，即对模拟影响较大
+
+"sim_mask_in_raw_gaussian": mask模拟对象，基于 "files/physdreamer/PhysDreamer/data/carnations/clean_object_points.ply"，这个文件可以用blender编辑得到
+
+"setup_simulation"中关于aabb的再次计算，范围*1.2并引入了冻结点 ("apply_grid_bc_w_freeze_pts")
+
+"set_E_nu_from_torch": 将train好的材质参数传回到MPM中
+
+Train Process Pipeline：
+
+Train基于两个函数def train & def train_one_step，material parameters更新在"get_material_params"
+
+代码流程：
+
+1. 读入和初始化
+__main__ 函数开始，通过 parse_args() 函数获取并解析命令行参数，生成配置文件。进入 Trainer 类的初始化阶段 (Trainer.__init__)：
+
+数据集初始化：
+create_dataset() 函数根据 dataset_dir 和 dataset_res 创建视频数据集和测试数据集。
+数据集通过 torch.utils.data.DataLoader 封装为可迭代的 DataLoader 对象，训练时通过 cycle() 进行无限循环。
+
+模型初始化：
+create_motion_model() 函数创建运动模型，该模型基于 GaussianModel 和 TemporalKplanesSE3fields 构建。
+如果指定了模型路径，通过 load_motion_model() 加载预训练模型，用于inference
+
+模拟器初始化：
+setup_simulation() 函数通过读取点云文件和填充内部点，设置 MPM (Material Point Method) 模拟环境，包括粒子的位置、初始速度、密度、杨氏模量等。
+
+优化器和调度器初始化：
+通过 torch.optim.AdamW 初始化优化器，更新 sim_fields 和 velo_fields。
+get_linear_schedule_with_warmup() 用于创建学习率调度器。
+
+日志系统初始化：通过 wandb 和 Accelerator 的结合，进行分布式训练时的日志管理。
+
+2. 训练过程
+训练过程从 Trainer.train() 函数开始，主要通过 train_one_step() 函数完成每一步训练。
+
+训练主循环：
+进入 train() 函数的主循环，依次调用 train_one_step()。
+每一轮训练都会从 self.dataloader 中取出一批数据，进行模型更新和损失计算。
+
+获取模拟输入：
+train_one_step() 调用 get_simulation_input()，该函数从 get_material_params() 中读取材质参数，并从 velo_fields 中获取初始速度。它返回以下数据：
+density: 每个点的密度。
+youngs_modulus: 每个点的杨氏模量（从 sim_fields 中计算得到）。
+poisson: 每个点的泊松比（初始化给定）。
+velocity: 每个点的初始速度（从 velo_fields 中获取）。
+其他相关张量：粒子位置、变形梯度张量 F、应变速率张量 C 等。
+
+物理模拟：
+MPMDifferentiableSimulationWCheckpoint 或 MPMDifferentiableSimulationClean 用于执行物理模拟过程，计算粒子在模拟空间中的位置和速度变化。
+模拟过程中，会将杨氏模量、泊松比和密度等物理参数应用于模拟。
+
+渲染与损失计算：
+模拟得到的粒子位置将通过 render_gaussian_seq_w_mask_with_disp() 函数进行渲染，生成视频帧。
+渲染结果与真实视频帧比较，通过 L2 损失 (F.mse_loss) 和 SSIM 损失 (compute_ssim) 计算总损失。同时加入 entropy 正则项。
+
+反向传播与优化：
+损失计算后，进行反向传播 (loss.backward())，更新 sim_fields 和 velo_fields 的参数。
+优化器和学习率调度器进行参数更新 (optimizer.step() 和 scheduler.step())。
+日志记录：
+
+每隔一定的迭代次数，训练过程中的损失和其他信息将通过 wandb 记录，并将模型保存至指定路径。
+
+3. Inference（推理过程）
+
+推理过程由 Trainer.inference() 函数执行，主要流程如下：
+
+初始化与参数设置：
+inference() 函数通过 velo_scaling 调整初始速度的缩放比例，并初始化物理模拟参数，包括密度、杨氏模量、泊松比、速度等。
+通过调用 get_simulation_input() 获取模拟所需的初始参数，尤其是从 velo_fields 和 sim_fields 中获取的初始速度和材质参数。
+
+物理模拟：
+推理过程中，同样通过 MPM 模拟器 (MPMDifferentiableSimulationClean) 进行模拟，计算每个时刻粒子的位置和速度变化。
+
+渲染：
+模拟的粒子位置通过 render_gaussian_seq_w_mask_with_disp() 函数渲染为视频帧，类似于训练过程中的渲染。
+渲染结果为 video_numpy，即推理生成的模拟视频。
+
+输出结果：
+最后，inference() 函数将生成的视频保存为 .gif 或其他格式的文件，输出为推理结果。
+
+总结
+
+读入阶段：
+parse_args()：解析参数。
+Trainer.__init__()：初始化数据集、模型、优化器、模拟器等。
+
+训练阶段：
+train()：训练主循环。
+train_one_step()：执行每一步训练，包括从数据集读取数据、物理模拟、损失计算和模型参数更新。
+
+推理阶段：
+
+inference()：执行推理，获取材质参数、初始速度，进行物理模拟并渲染输出结果。
+
+每个阶段都是围绕 sim_fields 和 velo_fields 进行，这两个网络分别负责材质参数的空间分布和初始速度场的生成
+
+
+# interface.py
+
+MPM的Auto diff：
+
+MPMDifferentiableSimulationWCheckpoint (有checkpoint) 和 MPMDifferentiableSimulationClean (无checkpoint)
+
+train_material.py中用的MPMDifferentiableSimulationClean
+
+
+**Inference**:
+
+Configs：files/physdreamer/PhysDreamer/projects/inference/configs/carnation.py
+代码：files/physdreamer/PhysDreamer/projects/inference/demo.py 源于train_material.py
+脚本：files/physdreamer/PhysDreamer/inference.sh
+
+**TO-DO**
+
+1. 修改Input
+
+2. 修改Loss: Chamfer Distance instead of rendering loss (infill mesh sequence)
+
+3. MPMDifferentiableSimulationRig for our MPM auto diff
+
+修改input：
+
+案例是cattleAFK_WalkB：files/physdreamer/PhysDreamer/data/walk，13个meshes
+
+1.得到infilled mesh，这个ply文件是包括mesh自身的点，还需要一个mesh ply文件来做mask
+
+2.直接替换模拟输入文件和gt
+
+
+18:
+
+Processing frames from 0 to 1, cuboid_velocity is trainable
+Total Loss: 0.05956852436065674, Chamfer Loss: 0.0594821572303772, ARAP Loss: 0.007043601479381323, SM Loss: 0.15930452942848206, Entropy: 0.0
+Module thirdparty_code.warp_mpm.mpm_utils load on device 'cuda:0' took 752.23 ms
+Loss_wp: [6.5804917e-10]
+Processing frames from 1 to 2, cuboid_velocity is trainable
+Total Loss: 0.1161685660481453, Chamfer Loss: 0.11607283353805542, ARAP Loss: 0.00798038300126791, SM Loss: 0.15930452942848206, Entropy: 0.0
+Loss_wp: [6.5612094e-10]
+Processing frames from 2 to 3, cuboid_velocity is trainable
+Total Loss: 0.2409352958202362, Chamfer Loss: 0.2408454716205597, ARAP Loss: 0.007389675825834274, SM Loss: 0.15930452942848206, Entropy: 0.0
+Loss_wp: [6.59077e-10]
+Processing frames from 3 to 4, cuboid_velocity is trainable
+Total Loss: 0.3942563831806183, Chamfer Loss: 0.39416295289993286, ARAP Loss: 0.007747964467853308, SM Loss: 0.15930452942848206, Entropy: 0.0
+Loss_wp: [6.4470007e-10]
+Processing frames from 4 to 5, cuboid_velocity is trainable
+Total Loss: 0.554520308971405, Chamfer Loss: 0.5544278621673584, ARAP Loss: 0.007650377694517374, SM Loss: 0.15930452942848206, Entropy: 0.0
+Loss_wp: [6.3578254e-10]
+{'Total_loss': 0.2730898156762123, 'Chamfer_loss': 0.2729982554912567, 'Arap_loss': 0.007562400493770838}
+nu:  0.3145568072795868 young_mean: 99999.9921875 young_max: 100000.0
+
+36:
+Processing frames from 0 to 1, cuboid_velocity is trainable
+Total Loss: 0.03370208665728569, Chamfer Loss: 0.03361513838171959, ARAP Loss: 0.007101786322891712, SM Loss: 0.15930452942848206, Entropy: 0.0
+Module thirdparty_code.warp_mpm.mpm_utils load on device 'cuda:0' took 433.43 ms
+Loss_wp: [6.559926e-10]
+Processing frames from 1 to 2, cuboid_velocity is trainable
+Total Loss: 0.08561311662197113, Chamfer Loss: 0.08552064001560211, ARAP Loss: 0.007654427085071802, SM Loss: 0.15930452942848206, Entropy: 0.0
+Loss_wp: [6.6220895e-10]
+Processing frames from 2 to 3, cuboid_velocity is trainable
+Total Loss: 0.19264733791351318, Chamfer Loss: 0.19256019592285156, ARAP Loss: 0.007121510338038206, SM Loss: 0.15930452942848206, Entropy: 0.0
+Loss_wp: [6.549645e-10]
+Processing frames from 3 to 4, cuboid_velocity is trainable
+Total Loss: 0.4134526550769806, Chamfer Loss: 0.41336095333099365, ARAP Loss: 0.007576917298138142, SM Loss: 0.15930452942848206, Entropy: 0.0
+Loss_wp: [6.456813e-10]
+Processing frames from 4 to 5, cuboid_velocity is trainable
+Total Loss: 1.3206475973129272, Chamfer Loss: 1.3205574750900269, ARAP Loss: 0.007413696963340044, SM Loss: 0.15930452942848206, Entropy: 0.0
+Loss_wp: [6.2831895e-10]
+{'Total_loss': 0.40921255871653556, 'Chamfer_loss': 0.40912288054823875, 'Arap_loss': 0.007373667601495981}
+nu:  0.3145568072795868 young_mean: 99999.9921875 young_max: 100000.0
+
+
+训练16次 花了100分钟 不见loss下降
