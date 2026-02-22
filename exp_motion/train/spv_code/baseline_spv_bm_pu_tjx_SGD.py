@@ -316,6 +316,7 @@ class Trainer:
             sizing_coeff=args.cuboid_size_coeff,
             knn_k=args.cuboid_knn_k,
             full_pointcloud=sim_xyzs.cpu().numpy(),
+            clamp_min_radius=args.clamp_cuboid_min_radius,
         )
     
         # 检查 cuboid_finding 是否成功找到立方体
@@ -881,18 +882,22 @@ def parse_args():
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--warmup_step", type=int, default=5)
     parser.add_argument("--cuboid_update_mode", type=str, default="both", 
-                        choices=["velocity_only", "location_only", "both"],
-                        help="Cuboid update mode: velocity_only, location_only, or both")
+                        choices=["none", "velocity_only", "location_only", "both"],
+                        help="Cuboid update mode: none, velocity_only, location_only, or both")
     parser.add_argument("--position_method", type=str, default="mean",
                         choices=["mean", "median", "weighted", "bbox", "adaptive", "pca", "optimized"],
                         help="Position calculation method for cuboid centers from tracked points")
     parser.add_argument("--cuboid_size_mode", type=str, default="fixed",
-                        choices=["fixed", "adaptive", "knn", "hybrid", "raycast"],
-                        help="Cuboid sizing strategy: fixed, adaptive, knn, hybrid, or raycast")
+                        choices=["fixed", "adaptive", "knn", "hybrid", "ceil_and_floor", "raycast"],
+                        help="Cuboid sizing strategy: fixed, adaptive, knn, hybrid, ceil_and_floor, or raycast")
     parser.add_argument("--cuboid_size_coeff", type=float, default=0.7,
                         help="Scaling coefficient for cuboid radius (used by all sizing modes)")
     parser.add_argument("--cuboid_knn_k", type=int, default=20,
                         help="K for KNN-based sizing modes (knn, hybrid, raycast)")
+    parser.add_argument("--dynamic_cuboid_cap", action="store_true", default=False,
+                        help="Enable dynamic per-frame cuboid radius capping based on velocity divergence")
+    parser.add_argument("--clamp_cuboid_min_radius", action="store_true", default=False,
+                        help="Clamp cuboid radii to at least grid_dx so every cuboid covers an MPM node")
 
 
     # distributed training args

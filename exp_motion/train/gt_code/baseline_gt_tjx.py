@@ -30,6 +30,7 @@ import wandb
 import pdb
 import trimesh
 import math
+import json
 import open3d as o3d
 
 import sys
@@ -286,6 +287,7 @@ class Trainer:
         z_range = max(abs(bbox['z_min']), abs(bbox['z_max'])) * 2.0  # z轴保持1.5倍
         grid_lim = max(x_range, y_range, z_range)  # 取最大值作为网格边界
         grid_dx = grid_lim / grid_size
+        self.grid_dx = grid_dx
         print("grid_dx:",grid_dx)
         print(f"X range: {x_range:.3f}m, Y range: {y_range:.3f}m, Z range: {z_range:.3f}m")
         
@@ -297,6 +299,7 @@ class Trainer:
         shift_np = shift.cpu().numpy() if hasattr(shift, 'cpu') else np.array(shift)
         scale_np = scale.cpu().numpy() if hasattr(scale, 'cpu') else np.array(scale)
         preprocessed_vertices = (gt_vertices + shift_np) / scale_np
+        self.num_vertices = preprocessed_vertices.shape[0]
         
         
         cuboid_centers, cuboid_sizes, cuboid_types, _ = cuboid_finding(
@@ -308,9 +311,11 @@ class Trainer:
             sizing_coeff=args.cuboid_size_coeff,
             knn_k=args.cuboid_knn_k,
             full_pointcloud=sim_xyzs.cpu().numpy(),
+            clamp_min_radius=args.clamp_cuboid_min_radius,
         )
     
-        # 检查 cuboid_finding 是否成功找到立方体
+        self.num_cuboids = len(cuboid_centers)
+    
         if len(cuboid_centers) == 0 or len(cuboid_sizes) == 0:
             raise ValueError("cuboid_finding_capsule 未能找到有效的 cuboid，请检查输入顶点。")
 
@@ -578,6 +583,29 @@ class Trainer:
                     save_ply(points_list, self.step, self.output_dir, frame_idx=start_time_idx, for_gt=True)
                 
                 
+            if self.args.dynamic_cuboid_cap:
+                # Dynamic per-frame cuboid radius capping: only shrink between
+                # cuboids with divergent velocities (different body parts).
+                dists = torch.cdist(self.cuboid_point.unsqueeze(0),
+                                    self.cuboid_point.unsqueeze(0)).squeeze(0)
+                dists.fill_diagonal_(float('inf'))
+
+                vel = current_cuboid_velocity.detach()
+                vel_norm = torch.norm(vel, dim=1, keepdim=True).clamp(min=1e-8)
+                vel_dir = vel / vel_norm
+                cosine_sim = vel_dir @ vel_dir.T
+                friendly = cosine_sim > 0.5
+                dists[friendly] = float('inf')
+
+                nn_dist, _ = dists.min(dim=1)
+                max_radius = nn_dist / 2.0
+                original_radius = self.cuboid_size[:, 0]
+                capped_radius = torch.min(original_radius, max_radius)
+                capped_radius = torch.clamp(capped_radius, min=self.grid_dx)
+                effective_cuboid_size = capped_radius.unsqueeze(1).expand_as(self.cuboid_size)
+            else:
+                effective_cuboid_size = self.cuboid_size
+
             # Haolan：一次调用中执行所有模拟步骤
             particle_pos, particle_velo, particle_F, particle_C, particle_cov = (
                 MPMDifferentiableSimulationRig.apply( 
@@ -595,7 +623,7 @@ class Trainer:
                     poisson,
                     current_cuboid_velocity,  # Haolan：传入当前frame的cuboid_velocity
                     self.cuboid_point, # Haolan：传入当前frame的point位置
-                    self.cuboid_size, # Haolan：size是固定值，通过size_scale来优化
+                    effective_cuboid_size, # dynamically capped to prevent overlap
                     frame_time_offset, # 全局时间累积
                     density,
                     device,
@@ -604,7 +632,9 @@ class Trainer:
             )
             
             # Haolan：更新cuboid_point位置，根据 cuboid_update_mode 选择更新方式
-            if self.cuboid_update_mode in ["location_only", "both"]:
+            if self.cuboid_update_mode == "none":
+                pass  # keep cuboid_point at initial position
+            elif self.cuboid_update_mode in ["location_only", "both"]:
                 # Use tracked point positions directly
                 self.cuboid_point = self.cuboid_positions[start_time_idx].detach()
             else:
@@ -712,11 +742,25 @@ class Trainer:
 
     def train(self):
         
+        sim_start = time.time()
         for iteration in tqdm(range(1), desc="Training progress"):
 
             self.train_one_step()
             self.step += 1
-        
+        sim_elapsed = time.time() - sim_start
+
+        num_sim_frames = self.window_size - 1
+        stats = {
+            "skeleton_points": self.num_vertices,
+            "cuboids": self.num_cuboids,
+            "points": self.num_particles,
+            "frames": num_sim_frames,
+            "inference_time_s": round(sim_elapsed, 2),
+            "fps": round(num_sim_frames / sim_elapsed, 2) if sim_elapsed > 0 else 0,
+        }
+        stats_path = os.path.join(self.output_dir, "inference_stats.json")
+        with open(stats_path, "w") as f:
+            json.dump(stats, f, indent=2)
 
         plot_losses(self.output_dir, num_iterations=self.train_iters) 
         plot_youngs_modulus(self.output_dir, self.youngs_modulus_mean, self.youngs_modulus_max, self.youngs_modulus_min)
@@ -789,18 +833,22 @@ def parse_args():
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--warmup_step", type=int, default=5)
     parser.add_argument("--cuboid_update_mode", type=str, default="both", 
-                        choices=["velocity_only", "location_only", "both"],
-                        help="Cuboid update mode: velocity_only, location_only, or both")
+                        choices=["none", "velocity_only", "location_only", "both"],
+                        help="Cuboid update mode: none, velocity_only, location_only, or both")
     parser.add_argument("--position_method", type=str, default="mean",
                         choices=["mean", "median", "weighted", "bbox", "adaptive", "pca", "optimized"],
                         help="Position calculation method for cuboid centers from tracked points")
     parser.add_argument("--cuboid_size_mode", type=str, default="fixed",
-                        choices=["fixed", "adaptive", "knn", "hybrid", "raycast"],
-                        help="Cuboid sizing strategy: fixed, adaptive, knn, hybrid, or raycast")
+                        choices=["fixed", "adaptive", "knn", "hybrid", "ceil_and_floor", "raycast"],
+                        help="Cuboid sizing strategy: fixed, adaptive, knn, hybrid, ceil_and_floor, or raycast")
     parser.add_argument("--cuboid_size_coeff", type=float, default=0.7,
                         help="Scaling coefficient for cuboid radius (used by all sizing modes)")
     parser.add_argument("--cuboid_knn_k", type=int, default=20,
                         help="K for KNN-based sizing modes (knn, hybrid, raycast)")
+    parser.add_argument("--dynamic_cuboid_cap", action="store_true", default=False,
+                        help="Enable dynamic per-frame cuboid radius capping based on velocity divergence")
+    parser.add_argument("--clamp_cuboid_min_radius", action="store_true", default=False,
+                        help="Clamp cuboid radii to at least grid_dx so every cuboid covers an MPM node")
 
 
     # distributed training args

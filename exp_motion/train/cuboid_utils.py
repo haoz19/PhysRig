@@ -46,7 +46,7 @@ def shrink_adjacent_cuboids(cuboid_centers, cuboid_sizes, cuboid_types, vertices
     
 def cuboid_finding(vertices, grid_dx, vertices_assignment=None, mesh=None,
                    sizing_mode="fixed", sizing_coeff=0.7, knn_k=20,
-                   full_pointcloud=None):
+                   full_pointcloud=None, clamp_min_radius=False):
     if vertices_assignment is None:
         cuboid_centers = []
         cuboid_sizes = []
@@ -105,27 +105,59 @@ def cuboid_finding(vertices, grid_dx, vertices_assignment=None, mesh=None,
                 cuboid_types.append('point_sphere')
                 print(f"  Cuboid {i}: kth_dist={kth_dists[i]:.6f}, radius={radius_i:.6f}")
 
-        # 4. Hybrid (KNN + Fixed Radius constraint)
-        #    KNN sets the base radius (coeff=1.0); sizing_coeff controls the fixed constraint
+        # 4. Hybrid (KNN capped by global min inter-control-point distance)
         elif sizing_mode == "hybrid":
             if full_pointcloud is None:
                 raise ValueError("sizing_mode='hybrid' requires full_pointcloud (dense point cloud) to be provided.")
-            # KNN distances from dense point cloud
             pc_tree = cKDTree(full_pointcloud)
             dists_knn, _ = pc_tree.query(vertices_original, k=knn_k)
             kth_dists = dists_knn[:, -1]
-            
-            # Fixed radius constraint (controlled by sizing_coeff)
-            fixed_radius = grid_dx * sizing_coeff
+
+            ctrl_dists = cdist(vertices_original, vertices_original)
+            global_min_dist = np.min(ctrl_dists[np.nonzero(ctrl_dists)])
+            cap_radius = (global_min_dist / 2.0) * sizing_coeff
+            print(f"  Hybrid cap: global_min_ctrl_dist={global_min_dist:.6f}, cap_radius={cap_radius:.6f}")
 
             for i in range(num_vertices):
-                knn_radius = kth_dists[i] * 1.0  # HARDCODED coefficient = 1.0 for KNN
-                # Take minimum of KNN radius and fixed constraint
-                radius_i = min(knn_radius, fixed_radius)
+                knn_radius = kth_dists[i] * 1.0
+                radius_i = min(knn_radius, cap_radius)
                 cuboid_centers.append(vertices_original[i])
                 cuboid_sizes.append(np.array([radius_i, radius_i, radius_i]))
                 cuboid_types.append('point_sphere')
-                print(f"  Cuboid {i}: knn_r={knn_radius:.6f}, fixed_r={fixed_radius:.6f}, final={radius_i:.6f}")
+                print(f"  Cuboid {i}: knn_r={knn_radius:.6f}, cap_r={cap_radius:.6f}, final={radius_i:.6f}")
+
+        # 5. Ceil-and-floor (KNN clamped between floor and ceiling)
+        #    floor = grid_dx * sqrt(5)  (quadratic B-spline support)
+        #    ceiling = (global_min_ctrl_dist / 2) * sizing_coeff  (prevent overlap)
+        elif sizing_mode == "ceil_and_floor":
+            if full_pointcloud is None:
+                raise ValueError("sizing_mode='ceil_and_floor' requires full_pointcloud (dense point cloud) to be provided.")
+            pc_tree = cKDTree(full_pointcloud)
+            dists_knn, _ = pc_tree.query(vertices_original, k=knn_k)
+            kth_dists = dists_knn[:, -1]
+
+            floor_radius = grid_dx * np.sqrt(5)
+
+            ctrl_dists = cdist(vertices_original, vertices_original)
+            global_min_dist = np.min(ctrl_dists[np.nonzero(ctrl_dists)])
+            ceiling_radius = (global_min_dist / 2.0) * sizing_coeff
+
+            floor_active = floor_radius <= ceiling_radius
+            if not floor_active:
+                print(f"  WARNING: floor ({floor_radius:.6f}) > ceiling ({ceiling_radius:.6f}); "
+                      f"ceiling wins, floor disabled to prevent overlap")
+            print(f"  Ceil-and-floor bounds: floor={floor_radius:.6f}, ceiling={ceiling_radius:.6f}, "
+                  f"global_min_ctrl_dist={global_min_dist:.6f}")
+
+            for i in range(num_vertices):
+                knn_radius = kth_dists[i] * 1.0
+                radius_i = min(knn_radius, ceiling_radius)
+                if floor_active:
+                    radius_i = max(radius_i, floor_radius)
+                cuboid_centers.append(vertices_original[i])
+                cuboid_sizes.append(np.array([radius_i, radius_i, radius_i]))
+                cuboid_types.append('point_sphere')
+                print(f"  Cuboid {i}: knn_r={knn_radius:.6f}, final={radius_i:.6f}")
 
         # 5. Ray Casting / Sphere Casting (density-based boundary detection)
         elif sizing_mode == "raycast":
@@ -233,8 +265,19 @@ def cuboid_finding(vertices, grid_dx, vertices_assignment=None, mesh=None,
         else:
             raise ValueError(
                 f"Unknown sizing_mode: '{sizing_mode}'. "
-                f"Must be one of: 'fixed', 'adaptive', 'knn', 'hybrid', 'raycast'"
+                f"Must be one of: 'fixed', 'adaptive', 'knn', 'hybrid', 'ceil_and_floor', 'raycast'"
             )
+
+        if clamp_min_radius:
+            min_radius = grid_dx
+            clamped_count = 0
+            for i in range(len(cuboid_sizes)):
+                old = cuboid_sizes[i].copy()
+                cuboid_sizes[i] = np.maximum(cuboid_sizes[i], min_radius)
+                if np.any(old < min_radius):
+                    clamped_count += 1
+            if clamped_count > 0:
+                print(f"  ⚠ Clamped {clamped_count}/{len(cuboid_sizes)} cuboids to min radius {min_radius:.6f} (= grid_dx)")
 
         boundary_points_list = []
         return cuboid_centers, cuboid_sizes, cuboid_types, boundary_points_list
@@ -336,7 +379,8 @@ def assign_cuboid_velocity(cuboid_centers, cuboid_sizes, cuboid_types, total_fra
     参数:
     - output_dir: 如果提供，将保存速度信息到txt文件
     - gt_meshes: 如果为 None，则返回所有速度为零的列表
-    - cuboid_update_mode: "velocity_only", "location_only", or "both"
+    - cuboid_update_mode: "none", "velocity_only", "location_only", or "both"
+        - "none": Traditional velocity (closest-point), fixed location (no tracked-point updates)
         - "velocity_only": Update cuboid velocity from tracked points, keep location fixed
         - "location_only": Update cuboid location from tracked points, keep velocity traditional
         - "both": Update both velocity and location from tracked points
@@ -404,7 +448,7 @@ def assign_cuboid_velocity(cuboid_centers, cuboid_sizes, cuboid_types, total_fra
     
     total_covered = sum(len(idx) for idx in cuboid_point_indices)
     print(f"\n  Total points covered: {total_covered}")
-    input("Press Enter to continue...")
+    # input("Press Enter to continue...")  # Commented out for non-interactive execution
     
     velocity_per_frame = []
     position_per_frame = []
@@ -526,7 +570,16 @@ def assign_cuboid_velocity(cuboid_centers, cuboid_sizes, cuboid_types, total_fra
                     vel_full = (p1 - p0) / delta_time
                     vel_step = vel_full / steps_this_segment if steps_this_segment > 1 else vel_full
                     
-                    if cuboid_update_mode == "velocity_only":
+                    if cuboid_update_mode == "none":
+                        # Traditional velocity (closest point), fixed position
+                        distances = torch.norm(current_frame_pos - cuboid_centers_tensor[cuboid_idx], dim=1)
+                        closest_idx = torch.argmin(distances)
+                        trad_p0 = current_frame_pos[closest_idx]
+                        trad_p1 = next_frame_pos[closest_idx]
+                        vel_full = (trad_p1 - trad_p0) / delta_time
+                        vel_step = vel_full / steps_this_segment if steps_this_segment > 1 else vel_full
+                        pos_start = cuboid_centers_tensor[cuboid_idx]
+                    elif cuboid_update_mode == "velocity_only":
                         pos_start = cuboid_centers_tensor[cuboid_idx]
                     elif cuboid_update_mode == "location_only":
                         distances = torch.norm(current_frame_pos - cuboid_centers_tensor[cuboid_idx], dim=1)

@@ -27,16 +27,17 @@ TOTAL_START_TIME=$(date +%s)
 
 # Configuration
 PYTHON=python
-DATASET="dragon_tjx"
+DATASET="bear"
 #SKELETON_DIR="data/dragon_tjx/skeleton_test/skeleton"
-SKELETON_DIR="data/dragon_tjx/skeleton"
+SKELETON_DIR="data/bear/skeleton"
 DATASET_DIR="data/${DATASET}"
 
-# Cuboid update mode: "velocity_only", "location_only", or "both"
+# Cuboid update mode: "none", "velocity_only", "location_only", or "both"
+# - none: Traditional mode - velocity from closest GT point, position stays at initial cuboid center (no reset per frame)
 # - velocity_only: Update cuboid velocity from tracked points, keep location fixed
 # - location_only: Update cuboid location from tracked points, keep velocity traditional
 # - both: Update both velocity and location from tracked points
-CUBOID_UPDATE_MODE="both"
+CUBOID_UPDATE_MODE="none"
 
 # Position method for computing cuboid center from tracked points:
 # - mean: Simple average of all tracked points (default, original behavior)
@@ -48,22 +49,34 @@ CUBOID_UPDATE_MODE="both"
 # - optimized: LBFGS optimization to minimize L2 deviation (EXPENSIVE!)
 POSITION_METHOD="adaptive"
 
-# Cuboid sizing strategy: "fixed", "adaptive", "knn", "hybrid", "raycast"
+# Cuboid sizing strategy: "fixed", "adaptive", "knn", "hybrid", "ceil_and_floor", "raycast"
 # - fixed: Uniform radius from global min inter-vertex distance (original behavior)
 # - adaptive: Per-cuboid radius from distance to nearest neighbor cuboid
 # - knn: Radius = distance to K-th nearest dense point (coeff HARDCODED to 1.0)
-# - hybrid: KNN (coeff=1.0) capped by fixed radius (= coeff * grid_dx)
+# - hybrid: KNN (coeff=1.0) capped by (global_min_ctrl_dist / 2) * coeff
+# - ceil_and_floor: KNN clamped between grid_dx*sqrt(5) and (global_min_ctrl_dist/2)*coeff
 # - raycast: Directional sphere expansion with density-based boundary detection
-CUBOID_SIZE_MODE="raycast"
+CUBOID_SIZE_MODE="ceil_and_floor"
 
 # Scaling coefficient for cuboid radius:
 # - knn mode: IGNORED (hardcoded to 1.0)
-# - hybrid mode: controls the fixed radius constraint (fixed_r = coeff * grid_dx)
+# - hybrid mode: cap = (global_min_ctrl_dist / 2) * coeff
+# - ceil_and_floor mode: ceiling = (global_min_ctrl_dist / 2) * coeff; floor = grid_dx * sqrt(5)
 # - other modes: scales the radius as before
-CUBOID_SIZE_COEFF=0.7
+CUBOID_SIZE_COEFF=0.6
 
-# K for KNN-based sizing modes (knn, hybrid, raycast)
+# K for KNN-based sizing modes (knn,raycast)
 CUBOID_KNN_K=56
+
+# Dynamic cuboid radius capping (velocity-divergence based overlap prevention)
+# OFF for training (original behavior), ON for inference
+DYNAMIC_CUBOID_CAP_INF=false
+DYNAMIC_CUBOID_CAP_TRAIN=false
+
+# Clamp cuboid radii to at least grid_dx
+# OFF for training (original behavior), ON for inference
+CLAMP_CUBOID_MIN_RADIUS_INF=false
+CLAMP_CUBOID_MIN_RADIUS_TRAIN=false
 
 # Check dataset exists
 if [ ! -d "$DATASET_DIR" ]; then
@@ -85,8 +98,8 @@ INFERENCE_OUTPUT_DIR="output/inference/${DATASET}"
 WANDB_NAME_INF="${DATASET}_inference"
 
 # Inference parameters (adjust as needed)
-NUM_FRAMES_INF=16           # Number of GT frames to process (must match skeleton files)
-NUM_INTERMEDIATE_INF=8      # Intermediate frames (keep 0 to match training)
+NUM_FRAMES_INF=24           # Number of GT frames to process (must match skeleton files)
+NUM_INTERMEDIATE_INF=0      # Intermediate frames (keep 0 to match training)
 SUBSTEP_INF=100             # Simulation substeps per frame
 YOUNGS_INF=6e4              # Young's modulus
 NU_INF=0.3                  # Poisson's ratio
@@ -111,6 +124,10 @@ rm -rf "$INFERENCE_OUTPUT_DIR"/*
 
 INFERENCE_START_TIME=$(date +%s)
 
+INF_EXTRA_ARGS=""
+[ "$DYNAMIC_CUBOID_CAP_INF" = true ] && INF_EXTRA_ARGS="$INF_EXTRA_ARGS --dynamic_cuboid_cap"
+[ "$CLAMP_CUBOID_MIN_RADIUS_INF" = true ] && INF_EXTRA_ARGS="$INF_EXTRA_ARGS --clamp_cuboid_min_radius"
+
 $PYTHON $INFERENCE_SCRIPT \
     --dataset_dir $DATASET_DIR \
     --skeleton_dir $SKELETON_DIR \
@@ -127,7 +144,8 @@ $PYTHON $INFERENCE_SCRIPT \
     --position_method $POSITION_METHOD \
     --cuboid_size_mode $CUBOID_SIZE_MODE \
     --cuboid_size_coeff $CUBOID_SIZE_COEFF \
-    --cuboid_knn_k $CUBOID_KNN_K
+    --cuboid_knn_k $CUBOID_KNN_K \
+    $INF_EXTRA_ARGS
 
 INFERENCE_END_TIME=$(date +%s)
 INFERENCE_DURATION=$((INFERENCE_END_TIME - INFERENCE_START_TIME))
@@ -216,7 +234,7 @@ VELO_FACTOR_TRAIN=0.0           # Start from zero velocity (will learn)
 # Training-specific parameters
 TRAIN_ITERS=100                  # Total iterations (50 is enough for validation; min loss usually found early)
 ITER_MATERIAL=10                # Material training iteration threshold
-LR=0.01                         # Learning rate
+LR=0.01                        # Learning rate
 MAX_GRAD_NORM=1.0               # Gradient clipping
 WARMUP_STEP=5                   # Warmup steps
 STRIDE=1                        # Temporal stride
@@ -231,6 +249,10 @@ echo "  - Iterations: $TRAIN_ITERS"
 echo ""
 
 VALIDATION_START_TIME=$(date +%s)
+
+TRAIN_EXTRA_ARGS=""
+[ "$DYNAMIC_CUBOID_CAP_TRAIN" = true ] && TRAIN_EXTRA_ARGS="$TRAIN_EXTRA_ARGS --dynamic_cuboid_cap"
+[ "$CLAMP_CUBOID_MIN_RADIUS_TRAIN" = true ] && TRAIN_EXTRA_ARGS="$TRAIN_EXTRA_ARGS --clamp_cuboid_min_radius"
 
 $PYTHON $TRAIN_SCRIPT \
     --dataset_dir $DATASET_DIR \
@@ -254,6 +276,7 @@ $PYTHON $TRAIN_SCRIPT \
     --cuboid_size_mode $CUBOID_SIZE_MODE \
     --cuboid_size_coeff $CUBOID_SIZE_COEFF \
     --cuboid_knn_k $CUBOID_KNN_K \
+    $TRAIN_EXTRA_ARGS \
     $CAPSULE_ARGS
 
 VALIDATION_END_TIME=$(date +%s)
