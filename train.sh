@@ -27,9 +27,9 @@ TOTAL_START_TIME=$(date +%s)
 
 # Configuration
 PYTHON=python
-DATASET="bear"
+DATASET="dragon_tjx"
 #SKELETON_DIR="data/dragon_tjx/skeleton_test/skeleton"
-SKELETON_DIR="data/bear/skeleton"
+SKELETON_DIR="data/${DATASET}/skeleton"
 DATASET_DIR="data/${DATASET}"
 
 # Cuboid update mode: "none", "velocity_only", "location_only", or "both"
@@ -37,7 +37,7 @@ DATASET_DIR="data/${DATASET}"
 # - velocity_only: Update cuboid velocity from tracked points, keep location fixed
 # - location_only: Update cuboid location from tracked points, keep velocity traditional
 # - both: Update both velocity and location from tracked points
-CUBOID_UPDATE_MODE="none"
+CUBOID_UPDATE_MODE="both"
 
 # Position method for computing cuboid center from tracked points:
 # - mean: Simple average of all tracked points (default, original behavior)
@@ -99,7 +99,7 @@ WANDB_NAME_INF="${DATASET}_inference"
 
 # Inference parameters (adjust as needed)
 NUM_FRAMES_INF=24           # Number of GT frames to process (must match skeleton files)
-NUM_INTERMEDIATE_INF=0      # Intermediate frames (keep 0 to match training)
+NUM_INTERMEDIATE_INF=8      # Intermediate frames (keep 0 to match training)
 SUBSTEP_INF=100             # Simulation substeps per frame
 YOUNGS_INF=6e4              # Young's modulus
 NU_INF=0.3                  # Poisson's ratio
@@ -232,9 +232,9 @@ SAMPLE_PARTICLES_TRAIN=100      # Same as inference
 VELO_FACTOR_TRAIN=0.0           # Start from zero velocity (will learn)
 
 # Training-specific parameters
-TRAIN_ITERS=100                  # Total iterations (50 is enough for validation; min loss usually found early)
+TRAIN_ITERS=100                 # Total iterations (50 is enough for validation; min loss usually found early)
 ITER_MATERIAL=10                # Material training iteration threshold
-LR=0.01                        # Learning rate
+LR=0.01                         # Learning rate
 MAX_GRAD_NORM=1.0               # Gradient clipping
 WARMUP_STEP=5                   # Warmup steps
 STRIDE=1                        # Temporal stride

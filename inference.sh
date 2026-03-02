@@ -16,7 +16,7 @@ set -e  # Exit on error
 
 # Configuration
 PYTHON=python
-DATASET="mixamo_walk"
+DATASET="mixamo_punch"
 SKELETON_DIR="data/${DATASET}/skeleton"
 DATASET_DIR="data/${DATASET}"
 

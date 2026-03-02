@@ -1,7 +1,23 @@
 *.pyc
+*.egg
+*.zip
 
 models/
 data/
 output/
 wandb/
+dist/
+*.egg-info/
+
 __MACOSX/
+.ipynb_checkpoints/
+
+diff-gaussian-rasterization/
+simple-knn/
+build/
+thirdparty_code/
+motionrep/
+physdreamer/misc/generative-models/
+physdreamer/misc/Sync4D/
+physdreamer/misc/sgm/
+physdreamer/misc/thirdparty_code/
