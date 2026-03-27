@@ -51,7 +51,7 @@ CUBOID_SIZE_MODE="fixed"
 # - hybrid mode: cap = (global_min_ctrl_dist / 2) * coeff
 # - ceil_and_floor mode: ceiling = (global_min_ctrl_dist / 2) * coeff; floor = grid_dx * sqrt(5)
 # - other modes: scales the radius as before
-CUBOID_SIZE_COEFF=0.1
+CUBOID_SIZE_COEFF=0.7
 
 # K for KNN-based sizing modes (knn, hybrid, raycast)
 CUBOID_KNN_K=56

@@ -27,7 +27,7 @@ TOTAL_START_TIME=$(date +%s)
 
 # Configuration
 PYTHON=python
-DATASET="dragon_tjx"
+DATASET="mixamo_punch"
 #SKELETON_DIR="data/dragon_tjx/skeleton_test/skeleton"
 SKELETON_DIR="data/${DATASET}/skeleton"
 DATASET_DIR="data/${DATASET}"
@@ -56,14 +56,16 @@ POSITION_METHOD="adaptive"
 # - hybrid: KNN (coeff=1.0) capped by (global_min_ctrl_dist / 2) * coeff
 # - ceil_and_floor: KNN clamped between grid_dx*sqrt(5) and (global_min_ctrl_dist/2)*coeff
 # - raycast: Directional sphere expansion with density-based boundary detection
-CUBOID_SIZE_MODE="ceil_and_floor"
+CUBOID_SIZE_MODE_INF="hybrid"
+CUBOID_SIZE_MODE_TRAIN="hybrid"
 
 # Scaling coefficient for cuboid radius:
 # - knn mode: IGNORED (hardcoded to 1.0)
 # - hybrid mode: cap = (global_min_ctrl_dist / 2) * coeff
 # - ceil_and_floor mode: ceiling = (global_min_ctrl_dist / 2) * coeff; floor = grid_dx * sqrt(5)
 # - other modes: scales the radius as before
-CUBOID_SIZE_COEFF=0.6
+CUBOID_SIZE_COEFF_INF=0.7
+CUBOID_SIZE_COEFF_TRAIN=0.6
 
 # K for KNN-based sizing modes (knn,raycast)
 CUBOID_KNN_K=56
@@ -99,7 +101,7 @@ WANDB_NAME_INF="${DATASET}_inference"
 
 # Inference parameters (adjust as needed)
 NUM_FRAMES_INF=24           # Number of GT frames to process (must match skeleton files)
-NUM_INTERMEDIATE_INF=8      # Intermediate frames (keep 0 to match training)
+NUM_INTERMEDIATE_INF=0      # Intermediate frames (keep 0 to match training)
 SUBSTEP_INF=100             # Simulation substeps per frame
 YOUNGS_INF=6e4              # Young's modulus
 NU_INF=0.3                  # Poisson's ratio
@@ -113,8 +115,8 @@ echo "  - Output: $INFERENCE_OUTPUT_DIR"
 echo "  - Frames: $NUM_FRAMES_INF"
 echo "  - Cuboid Update Mode: $CUBOID_UPDATE_MODE"
 echo "  - Position Method: $POSITION_METHOD"
-echo "  - Cuboid Size Mode: $CUBOID_SIZE_MODE"
-echo "  - Cuboid Size Coeff: $CUBOID_SIZE_COEFF"
+echo "  - Cuboid Size Mode: $CUBOID_SIZE_MODE_INF"
+echo "  - Cuboid Size Coeff: $CUBOID_SIZE_COEFF_INF"
 echo "  - Cuboid KNN K: $CUBOID_KNN_K"
 echo ""
 
@@ -142,8 +144,8 @@ $PYTHON $INFERENCE_SCRIPT \
     --output_dir $INFERENCE_OUTPUT_DIR \
     --cuboid_update_mode $CUBOID_UPDATE_MODE \
     --position_method $POSITION_METHOD \
-    --cuboid_size_mode $CUBOID_SIZE_MODE \
-    --cuboid_size_coeff $CUBOID_SIZE_COEFF \
+    --cuboid_size_mode $CUBOID_SIZE_MODE_INF \
+    --cuboid_size_coeff $CUBOID_SIZE_COEFF_INF \
     --cuboid_knn_k $CUBOID_KNN_K \
     $INF_EXTRA_ARGS
 
@@ -232,7 +234,7 @@ SAMPLE_PARTICLES_TRAIN=100      # Same as inference
 VELO_FACTOR_TRAIN=0.0           # Start from zero velocity (will learn)
 
 # Training-specific parameters
-TRAIN_ITERS=100                 # Total iterations (50 is enough for validation; min loss usually found early)
+TRAIN_ITERS=70                 # Total iterations (50 is enough for validation; min loss usually found early)
 ITER_MATERIAL=10                # Material training iteration threshold
 LR=0.01                         # Learning rate
 MAX_GRAD_NORM=1.0               # Gradient clipping
@@ -273,8 +275,8 @@ $PYTHON $TRAIN_SCRIPT \
     --stride $STRIDE \
     --cuboid_update_mode $CUBOID_UPDATE_MODE \
     --position_method $POSITION_METHOD \
-    --cuboid_size_mode $CUBOID_SIZE_MODE \
-    --cuboid_size_coeff $CUBOID_SIZE_COEFF \
+    --cuboid_size_mode $CUBOID_SIZE_MODE_TRAIN \
+    --cuboid_size_coeff $CUBOID_SIZE_COEFF_TRAIN \
     --cuboid_knn_k $CUBOID_KNN_K \
     $TRAIN_EXTRA_ARGS \
     $CAPSULE_ARGS

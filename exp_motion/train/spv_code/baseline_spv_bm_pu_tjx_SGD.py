@@ -590,14 +590,6 @@ class Trainer:
             current_cuboid_velocity = self.cuboid_velocity[start_time_idx]
             self.log_cuboid_velocity(start_time_idx, end_time_idx, current_cuboid_velocity)
             
-            if self.step == self.train_iters - 1:
-                if start_time_idx == 0:
-                    sim_points_full = particle_pos.detach()
-                    sim_points_full = sim_points_full * self.scale - self.shift
-                    points_list = [sim_points_full]
-                    save_ply(points_list, self.step, self.output_dir, frame_idx=start_time_idx)
-                
-                
             # Haolan：一次调用中执行所有模拟步骤
             particle_pos, particle_velo, particle_F, particle_C, particle_cov = (
                 MPMDifferentiableSimulationRig.apply( 
@@ -634,18 +626,15 @@ class Trainer:
             # Haolan：累积全局时间
             frame_time_offset += delta_time
             
+            # 在最后一轮保存粒子点云和 cuboid_point
             if self.step == self.train_iters - 1:
-                sim_points_full = particle_pos.detach()
-                sim_points_full = sim_points_full * self.scale - self.shift
-                points_list = [sim_points_full]
-                save_ply(points_list, self.step, self.output_dir, frame_idx=start_time_idx+1)
-             
-            # 在最后一轮保存变换后的 cuboid_point
-            if self.step == self.train_iters - 1:
+                sim_points_full = particle_pos.detach() * self.scale - self.shift
+                save_ply([sim_points_full], self.step, self.output_dir, frame_idx=start_time_idx+1,
+                         subdir=f"output_{self.step + 1}")
+
                 cuboid_point_transformed = self.cuboid_point.detach() * self.scale - self.shift
                 cuboid_point_np = cuboid_point_transformed.cpu().numpy()
-                cuboid_points_list = [cuboid_point_np]
-                save_ply(cuboid_points_list, self.step, self.output_dir, frame_idx=start_time_idx+1, subdir="skeleton")
+                save_ply([cuboid_point_np], self.step, self.output_dir, frame_idx=start_time_idx+1, subdir="skeleton")
             
             # Haolan:loss 
             chamfer_dist = ChamferDistance()
