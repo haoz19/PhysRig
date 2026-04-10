@@ -1,3 +1,6 @@
+![Reaction Demo](docs/gif/reaction.gif)
+![Trex Demo](docs/gif/trex.gif)
+
 # PhysRig: Differentiable Physics-Based Rigging for Realistic Articulated Object Modeling
 
 [![Paper](https://img.shields.io/badge/Paper-arXiv%3A2506.20936-b31b1b.svg)](https://arxiv.org/abs/2506.20936)
