@@ -1,5 +1,7 @@
-![Reaction Demo](docs/gif/reaction.gif)
-![Trex Demo](docs/gif/trex.gif)
+<p align="center">
+  <img src="docs/gif/reaction.gif" alt="Reaction Demo" width="45%">
+  <img src="docs/gif/trex.gif" alt="Trex Demo" width="45%">
+</p>
 
 # PhysRig: Differentiable Physics-Based Rigging for Realistic Articulated Object Modeling
 
